@@ -1,2 +1,0 @@
-This is a folder where the results of the synthetic data generation process are stored.
-Do not delete this.

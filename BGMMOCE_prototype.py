@@ -26,23 +26,20 @@ os.chdir(os.getcwd())
 plt.rcParams.update({'font.size': 7, 'figure.figsize': (26, 22)})
 
 
-def plot_db_scores(cluster_counts, db_scores, optimal_clusters=None):
+def plot_db_scores(cluster_counts, db_scores, optimal_clusters, path_root):
+    optimal_index = cluster_counts.index(optimal_clusters)
+    optimal_score = db_scores[optimal_index]
     plt.figure(figsize=(10, 6))
     plt.plot(cluster_counts, db_scores, marker='o', linestyle='-', color='b')
-    
-    if optimal_clusters is not None:
-        optimal_index = cluster_counts.index(optimal_clusters)
-        optimal_score = db_scores[optimal_index]
-        plt.scatter(optimal_clusters, optimal_score, color='red', s=100, label=f'Optimal ({optimal_clusters} clusters)')
-        plt.legend()
-    
+    plt.scatter(optimal_clusters, optimal_score, color='red', s=100, label=f'Optimal ({optimal_clusters} clusters)')
+    plt.legend()
     plt.title('Davies-Bouldin Scores by Number of Clusters')
     plt.xlabel('Number of Clusters')
     plt.ylabel('Davies-Bouldin Score')
     plt.grid(True)
     plt.xticks(cluster_counts)
     plt.show()
-    plt.savefig('synthetic/DBscores.png', dpi=300)
+    plt.savefig(path_root+'/DBscores.png', dpi=300)
 
 
 def perform_clustering(data, num_clusters):
@@ -91,7 +88,7 @@ def collect_categorical_mappings(dataframe, threshold=10):
     for column in dataframe.columns:
         unique_values = dataframe[column].dropna().unique()
         if len(unique_values) <= threshold:
-            categorical_mappings[column] = sorted(unique_values)  # Sort to ensure consistent mapping
+            categorical_mappings[column] = sorted(unique_values)
 
     return categorical_mappings
 
@@ -103,41 +100,59 @@ def map_to_category(values, categories):
     return categories[category_indices]
 
 
-D = pd.read_csv('test.csv')
-D.drop(columns=['Idiopathic Inflammatory Myopathy (IIM)',
-                'Inclusion Body Myositis (IBM) documented with Biopsy'], inplace=True)
-feature_names = list(D.columns)
-D = pd.DataFrame(columns=feature_names, data=D)
-categorical_mappings = collect_categorical_mappings(D)
+input_file = input("Please provide the input file path (CSV or JSON): ")
+file_extension = os.path.splitext(input_file)[1].lower()
 
+if file_extension == '.csv':
+    D = pd.read_csv(input_file)
+elif file_extension == '.json':
+    D = pd.read_json(input_file)
+else:
+    raise ValueError("Unsupported file format. Please provide a CSV or JSON file.")
+
+num_patients = int(input("Please provide the number of patients to generate: "))
+max_clusters = 30
+print("")
+
+path_root = f'synthetic/{num_patients}'
+if not os.path.isdir(path_root):
+    os.makedirs(path_root)
+
+print("Separating categorical from numerical features and estimating the correlation matrix")
+start = time.time()
+categorical_mappings = collect_categorical_mappings(D)
 X_corr = D.corr(method='pearson')
 X_cov = D.cov()
 # cV_real = D.std()/D.mean()
 
 plt.figure()
 sns.heatmap(D.corr())
-plt.savefig('synthetic/Corr_plot_real.png', dpi=600, bbox_inches='tight')
+plt.savefig(path_root+'/Corr_plot_real.png', dpi=600, bbox_inches='tight')
 plt.close()
+end = time.time()
+print(f"Elapsed time = {end-start} sec")
+print("")
 
-num_patients = 2000
-max_clusters = 30
-
-cluster_counts, db_scores, optimal_clusters = find_optimal_clusters(D, max_clusters)
-
-print(f"The optimal number of clusters is {optimal_clusters}")
-plot_db_scores(cluster_counts, db_scores, optimal_clusters)
-
-weight_concentration_prior = np.exp(-optimal_clusters)
-
-# fit BGMM
+print("Initializing the optimal component estimation process")
 start = time.time()
+cluster_counts, db_scores, optimal_clusters = find_optimal_clusters(D, max_clusters)
+print(f"The optimal number of clusters is {optimal_clusters}")
+plot_db_scores(cluster_counts, db_scores, optimal_clusters, path_root)
+end = time.time()
+print(f"Elapsed time = {end-start} sec")
+print("")
+
+print("Setting up the BGMM")
+start = time.time()
+weight_concentration_prior = np.exp(-optimal_clusters)
 g = BayesianGaussianMixture(n_components=optimal_clusters,
                             covariance_type='diag',
                             random_state=0,
                             weight_concentration_prior=weight_concentration_prior)
 g.fit(D)
 end = time.time()
-print(f"Elapsed time {end-start}")
+print(f"Elapsed time = {end-start} sec")
+print("")
 
 gofss = []
 KL_divss = []
@@ -148,19 +163,13 @@ std_cof_dif_scoress = []
 std_cov_dif_scoress = []
 weights_opts = []
 opts = []
-times = []
 CORR = []
 COV = []
 cV_diff = []
 cV_virtual = []
 vmrrr = []
-        
-path_root = 'synthetic/'+str(num_patients)
 
-if(not os.path.isdir(path_root)):
-    os.makedirs(path_root)
-print("Number of virtual patients =", num_patients)
-
+print("Generating the patients")
 start = time.time()
 Xnew = g.sample(num_patients)[0]
 X_VP = pd.DataFrame(columns=D.columns, data=Xnew)
@@ -172,7 +181,6 @@ for col, categories in categorical_mappings.items():
 X_VP.to_csv(path_root+'/Vpop_'+str(num_patients)+'.csv', index=False)
 
 end = time.time()
-times.append(end-start)
 print(f"Elapsed time = {end-start} sec")
 print("")
 
@@ -181,6 +189,9 @@ p_aa = []
 KL_divv = []
 vmrr = []
 i = 0
+
+print("Initiating the performance evaluation process")
+start = time.time()
 for s in list(D.columns):
     [a, p_a] = stats.ks_2samp(D.iloc[:,i], X_VP.iloc[:,i])
     aa.append(a)
@@ -244,13 +255,18 @@ results_DF = pd.DataFrame(data={'gof':aa,
                                 'Covariance diff.': diff_metric2,
                             })
 results_DF.to_csv(path_root+'/results.csv', index=False)
+end = time.time()
+print(f"Elapsed time = {end-start} sec")
+print("")
 
+print("Generating figures")
+start = time.time()
 plt.figure()
 sns.heatmap(X_VP.corr())
 plt.savefig(path_root+'/Corr_plot_virtual_BGMM.png', dpi=600, bbox_inches='tight')
 plt.close()
 
-X_VP.columns = feature_names
+X_VP.columns = D.columns
 
 plt.figure()
 sns.heatmap(np.abs(X_corr-X_VP_corr), vmin=0, vmax=1, robust=True)
@@ -291,3 +307,6 @@ for i in range(0,np.size(X_VP,1)):
     plt.show()
 plt.savefig(path_root+'/distributions_with_cV.png', dpi=600)
 plt.close()
+end = time.time()
+print(f"Elapsed time = {end-start} sec")
+print("")
