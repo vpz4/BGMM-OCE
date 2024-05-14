@@ -1,0 +1,6 @@
+.*csv
+.*xlsx
+.*png
+.conda/
+synthetic/
+test.csv
